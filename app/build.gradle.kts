@@ -4,10 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "io.github.stickerfix"
+    namespace = "dhp.tpl.groupstickerfix"
     compileSdk = 34
     defaultConfig {
-        applicationId = "io.github.stickerfix"
+        applicationId = "dhp.tpl.groupstickerfix"
         minSdk = 28
         targetSdk = 34
         versionCode = 1

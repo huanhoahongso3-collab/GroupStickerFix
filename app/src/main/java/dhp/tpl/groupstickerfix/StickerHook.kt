@@ -1,4 +1,4 @@
-package io.github.stickerfix
+package dhp.tpl.groupstickerfix
 
 import android.os.Build
 import de.robv.android.xposed.XC_MethodHook

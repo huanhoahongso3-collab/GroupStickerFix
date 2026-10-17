@@ -1,4 +1,4 @@
-package io.github.stickerfix
+package dhp.tpl.groupstickerfix
 
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.IXposedHookZygoteInit
