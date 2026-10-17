@@ -17,13 +17,6 @@ jobs:
         with: { gradle-version: "8.9" }
       - name: Decode keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
-      - name: Debug signing inputs (lengths only)
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        run: |
-          echo "ks bytes: $(stat -c %s "$RUNNER_TEMP/release.jks")  pass len: ${#KEYSTORE_PASSWORD}  alias len: ${#KEY_ALIAS}"
-          keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KEYSTORE_PASSWORD" 2>&1 | head -5
       - name: Build signed release
         env:
           KEYSTORE_PATH: ${{ runner.temp }}/release.jks
