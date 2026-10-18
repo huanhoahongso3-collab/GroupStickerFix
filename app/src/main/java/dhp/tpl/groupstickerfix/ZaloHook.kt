@@ -17,7 +17,8 @@ import java.util.WeakHashMap
  * - Clipboard png: run the same sticker-like test by presenting it as source 2 (photos / opaque / big
  *   images fail the test and stay images).
  * - Anything tagged "sticker" (ClipDescription label / extras / mime): force the test to pass.
- * - Untagged keyboard images are left exactly as Zalo handles them.
+ * - PNGs committed by the keyboard picker are stickers too (keyboards give no tag, label == mime).
+ * - Other untagged keyboard images (jpeg, ...) are left exactly as Zalo handles them.
  *
  * Both methods are found with DexKit fingerprints, never by name.
  */
@@ -79,7 +80,9 @@ object ZaloHook {
                     val label = desc?.label?.toString().orEmpty()
                     val mimes = desc?.let { d -> (0 until d.mimeTypeCount).map { d.getMimeType(it) } }.orEmpty()
                     val extras = try { desc?.extras?.keySet()?.joinToString().orEmpty() } catch (_: Throwable) { "" }
-                    val tagged = listOf(label, extras, mimes.joinToString()).any { it.contains("sticker", ignoreCase = true) }
+                    val hasTag = listOf(label, extras, mimes.joinToString()).any { it.contains("sticker", ignoreCase = true) }
+                    // Keyboards (Gboard etc.) don't tag stickers: a PNG committed by the keyboard picker is a sticker, as in Messenger.
+                    val tagged = hasTag || (source == SOURCE_KEYBOARD && mime.equals("image/png", ignoreCase = true))
                     val png = mime.equals("image/png", ignoreCase = true)
 
                     var action = "unchanged"
