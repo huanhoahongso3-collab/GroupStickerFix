@@ -4,6 +4,8 @@ import android.content.ClipDescription
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.callbacks.XC_LoadPackage
+import android.app.AndroidAppHelper
+import android.net.Uri
 import java.lang.reflect.Field
 import java.util.Collections
 import java.util.WeakHashMap
@@ -63,6 +65,7 @@ object ZaloHook {
 
         val payloadType = decide.parameterTypes[1]
         val payloadMime: Field? = payloadType.declaredFields.firstOrNull { it.type == String::class.java }?.also { it.isAccessible = true }
+        val payloadUri: Field? = payloadType.declaredFields.firstOrNull { it.type == Uri::class.java }?.also { it.isAccessible = true }
         val testPayload: Field? = spriteTest.declaringClass.declaredFields.firstOrNull { it.type == payloadType }?.also { it.isAccessible = true }
         if (testPayload == null) {
             XposedBridge.log("$TAG: [zalo] payload field not found in ${spriteTest.declaringClass.name}")
@@ -84,14 +87,14 @@ object ZaloHook {
                     val label = desc?.label?.toString().orEmpty()
                     val mimes = desc?.let { d -> (0 until d.mimeTypeCount).map { d.getMimeType(it) } }.orEmpty()
                     val extras = try { desc?.extras?.keySet()?.joinToString().orEmpty() } catch (_: Throwable) { "" }
-                    val hasTag = listOf(label, extras, mimes.joinToString()).any { it.contains("sticker", ignoreCase = true) }
+                    val hasTag = StickerTest.tagged(desc)
                     // Keyboards (Gboard etc.) don't tag stickers: a PNG committed by the keyboard picker is a sticker, as in Messenger.
                     val tagged = hasTag || (source == SOURCE_KEYBOARD && mime.equals("image/png", ignoreCase = true))
                     val png = mime.equals("image/png", ignoreCase = true)
 
                     var action = "unchanged"
-                    if (png && (tagged || source == SOURCE_CLIPBOARD || source == SOURCE_DRAG_DROP)) {
-                        param.args[3] = SOURCE_KEYBOARD // let Zalo's own sticker-like-PNG test run
+                    if (png) {
+                        param.args[3] = SOURCE_KEYBOARD // makes Zalo run its sticker test (b6) for every source
                         action = "png->test"
                     }
                     if (tagged) {
@@ -109,7 +112,14 @@ object ZaloHook {
             override fun afterHookedMethod(param: MethodHookParam) {
                 try {
                     val payload = testPayload.get(param.thisObject) ?: return
-                    if (forced.containsKey(payload) && param.result == false) param.result = true
+                    if (param.result != false) return
+                    if (forced.containsKey(payload)) { param.result = true; return }
+                    val uri = payloadUri?.get(payload) as? Uri ?: return
+                    val cr = AndroidAppHelper.currentApplication()?.contentResolver ?: return
+                    if (StickerTest.looksLikeSticker(cr, uri)) {
+                        param.result = true
+                        XposedBridge.log("$TAG: [zalo] image looks like a sticker -> sticker")
+                    }
                 } catch (t: Throwable) {
                     XposedBridge.log("$TAG: [zalo] test hook error: $t")
                 }

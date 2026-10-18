@@ -20,6 +20,7 @@ The keyboard-content handler only converts the pasted image to a sticker when `T
 Keyboard commits (source 2) and clipboard pastes (source 1) arrive in one method. Zalo sends a sticker for GIFs, or for PNGs when the source is the keyboard **and** a "sticker-like PNG" test passes (small, transparent edges). The module:
 - runs that same test for clipboard-pasted and drag-and-dropped PNGs, so a sticker becomes a sticker while photos, screenshots and large or opaque images stay images;
 - forces the sticker path for anything tagged "sticker" (clip label, extras or MIME) and for PNGs committed by the keyboard picker (keyboards do not tag their stickers);
+- also runs a transparency check on every image (any route): a PNG/WebP with a real alpha channel, a large transparent area and an opaque object is treated as a sticker; photos and screenshots are not;
 - leaves other keyboard images (JPEG, ...) exactly as Zalo handles them.
 
 ## Install
@@ -34,3 +35,7 @@ Tested against Messenger 583.0.0.29.95 and Zalo 26.10.01. Other versions rely on
 
 ## Build
 CI (`.github/workflows/build.yml`) builds and signs a release APK with Gradle 8.9 and JDK 17. It needs these repository secrets: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`. Pushing a `v*` tag attaches the APK to a GitHub release.
+
+## How a sticker is recognised
+1. **Tag** – the clip's label, MIME types or extras contain `sticker` or `object_capture` (Samsung gallery object cut-outs).
+2. **Pixel check** – PNG/WebP only; a downsampled copy must have an alpha channel, at least 12% (almost) fully transparent pixels and at least 4% (almost) opaque pixels (an object on a transparent background). Photos and screenshots fail.
