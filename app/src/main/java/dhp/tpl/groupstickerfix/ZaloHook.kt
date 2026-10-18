@@ -29,6 +29,7 @@ object ZaloHook {
 
     private const val SOURCE_CLIPBOARD = 1
     private const val SOURCE_KEYBOARD = 2
+    private const val SOURCE_DRAG_DROP = 3
 
     private val forced: MutableMap<Any, Boolean> = Collections.synchronizedMap(WeakHashMap())
 
@@ -74,7 +75,10 @@ object ZaloHook {
                     val payload = param.args[1] ?: return
                     val desc = param.args[2] as? ClipDescription
                     val source = param.args[3] as? Int ?: return
-                    if (source != SOURCE_CLIPBOARD && source != SOURCE_KEYBOARD) return
+                    if (source != SOURCE_CLIPBOARD && source != SOURCE_KEYBOARD && source != SOURCE_DRAG_DROP) {
+                        XposedBridge.log("$TAG: [zalo] ignored source=$source")
+                        return
+                    }
 
                     val mime = (payloadMime?.get(payload) as? String).orEmpty()
                     val label = desc?.label?.toString().orEmpty()
@@ -86,7 +90,7 @@ object ZaloHook {
                     val png = mime.equals("image/png", ignoreCase = true)
 
                     var action = "unchanged"
-                    if (png && (tagged || source == SOURCE_CLIPBOARD)) {
+                    if (png && (tagged || source == SOURCE_CLIPBOARD || source == SOURCE_DRAG_DROP)) {
                         param.args[3] = SOURCE_KEYBOARD // let Zalo's own sticker-like-PNG test run
                         action = "png->test"
                     }

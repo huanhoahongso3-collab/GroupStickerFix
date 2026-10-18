@@ -18,7 +18,7 @@ The keyboard-content handler only converts the pasted image to a sticker when `T
 
 ### Zalo
 Keyboard commits (source 2) and clipboard pastes (source 1) arrive in one method. Zalo sends a sticker for GIFs, or for PNGs when the source is the keyboard **and** a "sticker-like PNG" test passes (small, transparent edges). The module:
-- runs that same test for clipboard PNGs, so a pasted sticker becomes a sticker while photos, screenshots and large or opaque images stay images;
+- runs that same test for clipboard-pasted and drag-and-dropped PNGs, so a sticker becomes a sticker while photos, screenshots and large or opaque images stay images;
 - forces the sticker path for anything tagged "sticker" (clip label, extras or MIME) and for PNGs committed by the keyboard picker (keyboards do not tag their stickers);
 - leaves other keyboard images (JPEG, ...) exactly as Zalo handles them.
 
