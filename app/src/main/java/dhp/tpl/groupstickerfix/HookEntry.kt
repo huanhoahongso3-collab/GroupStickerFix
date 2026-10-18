@@ -13,11 +13,14 @@ class HookEntry : IXposedHookZygoteInit, IXposedHookLoadPackage {
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        if (lpparam.packageName != StickerHook.TARGET || lpparam.processName != lpparam.packageName) return
+        if (lpparam.processName != lpparam.packageName) return
         try {
-            StickerHook.install(lpparam, modulePath)
+            when (lpparam.packageName) {
+                MessengerHook.TARGET -> MessengerHook.install(lpparam, modulePath)
+                ZaloHook.TARGET -> ZaloHook.install(lpparam, modulePath)
+            }
         } catch (t: Throwable) {
-            XposedBridge.log("${StickerHook.TAG}: install failed: $t")
+            XposedBridge.log("${Resolver.TAG}: install failed for ${lpparam.packageName}: $t")
         }
     }
 }

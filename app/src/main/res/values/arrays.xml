@@ -2,5 +2,6 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.facebook.orca</item>
+        <item>com.zing.zalo</item>
     </string-array>
 </resources>

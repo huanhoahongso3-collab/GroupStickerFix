@@ -5,7 +5,7 @@
         android:allowBackup="false">
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription"
-            android:value="Send keyboard stickers as stickers (not images) in Messenger group chats" />
+            android:value="Send keyboard and pasted stickers as stickers (not images) in Messenger groups and Zalo" />
         <meta-data android:name="xposedminversion" android:value="93" />
         <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
     </application>
