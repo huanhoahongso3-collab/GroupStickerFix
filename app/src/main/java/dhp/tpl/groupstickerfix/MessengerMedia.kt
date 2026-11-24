@@ -269,19 +269,64 @@ object MessengerMedia {
                 queue += v to depth + 1
             }
         }
-        for (start in fragments) {
-            var cur: Any? = start
-            var hops = 0
-            while (cur != null && hops++ < 8) {
-                accept(cur)?.let { return it }
-                cur = call(cur, "getParentFragment")
-            }
+        val tree = fragmentTree(fragments, fragmentCls)
+        val candidates = tree.mapNotNull { accept(it) }
+        if (candidates.isNotEmpty()) {
+            return candidates.firstOrNull { call(it.first, "isResumed") == true } ?: candidates.first()
         }
-        XposedBridge.log("$TAG: [messenger] compose fragment not reachable from handler (fragments=${fragments.map { it.javaClass.name }}); trying live instances")
-
         val live = synchronized(composeFragments) { composeFragments.mapNotNull { it.get() } }.asReversed()
+        tree.filter { f -> sendTypes.any { it.isInstance(f) } }.forEach { f ->
+            XposedBridge.log("$TAG: [messenger] compose fragment ${f.javaClass.name} has no OneLineComposerView; composer-like fields=" +
+                instanceFields(f.javaClass).mapNotNull { fl -> fl.get(f)?.javaClass?.name }.filter { it.contains("composer", true) })
+        }
+        XposedBridge.log("$TAG: [messenger] compose fragment not found; handler fragments=${fragments.map { it.javaClass.name }} " +
+            "tree=${tree.map { it.javaClass.name }} live=${live.map { it.javaClass.name + "(added=" + call(it, "isAdded") + ")" }}")
         val ready = live.filter { call(it, "isAdded") == true }
         return (ready.firstOrNull { call(it, "isResumed") == true } ?: ready.firstOrNull())?.let(::accept)
+    }
+
+    /** Child fragments of [fragment] (its child FragmentManager's list; the manager's method names are obfuscated). */
+    private fun childrenOf(fragment: Any, fragmentCls: Class<*>): List<Any> = fragmentsIn(call(fragment, "getChildFragmentManager"), fragmentCls)
+
+    private fun fragmentsIn(manager: Any?, fragmentCls: Class<*>): List<Any> {
+        manager ?: return emptyList()
+        val out = ArrayList<Any>()
+        var k: Class<*>? = manager.javaClass
+        while (k != null && k != Any::class.java) {
+            for (m in k.declaredMethods) {
+                if (!Modifier.isPublic(m.modifiers) || Modifier.isStatic(m.modifiers) || m.parameterCount != 0 || m.returnType != List::class.java) continue
+                try {
+                    m.isAccessible = true
+                    (m.invoke(manager) as? List<*>)?.forEach { if (it != null && fragmentCls.isInstance(it)) out += it }
+                } catch (_: Throwable) {}
+            }
+            k = k.superclass
+        }
+        return out
+    }
+
+    /** Every fragment under the top-most ancestor of each start fragment, plus the activity's own fragments. */
+    private fun fragmentTree(starts: List<Any>, fragmentCls: Class<*>): List<Any> {
+        val out = ArrayList<Any>()
+        val seen = IdentityHashMap<Any, Boolean>()
+        fun visit(f: Any, depth: Int) {
+            if (depth > 8 || seen.put(f, true) != null) return
+            out += f
+            childrenOf(f, fragmentCls).forEach { visit(it, depth + 1) }
+        }
+        val fmType = fragmentCls.getMethod("getChildFragmentManager").returnType
+        for (start in starts) {
+            var top: Any = start
+            var hops = 0
+            while (hops++ < 10) top = call(top, "getParentFragment") ?: break
+            visit(top, 0)
+            val activity = call(start, "getActivity") ?: continue
+            for (m in activity.javaClass.methods) {
+                if (m.parameterCount != 0 || m.returnType != fmType) continue
+                try { fragmentsIn(m.invoke(activity), fragmentCls).forEach { visit(it, 1) } } catch (_: Throwable) {}
+            }
+        }
+        return out
     }
 
     private fun sendNow(
