@@ -243,17 +243,8 @@ object MessengerMedia {
     private fun composerOf(fragment: Any, composerCls: Class<*>): Any? =
         instanceFields(fragment.javaClass).firstNotNullOfOrNull { f -> f.get(fragment)?.takeIf { composerCls.isInstance(it) } }
 
-    /**
-     * The compose fragment is the one the send handler takes as its argument. Look for it from the handler's own
-     * fields and up the parent-fragment chain (the handler may only hold a child such as the media tray), then fall
-     * back to the compose fragments created in this process.
-     */
-    private fun findComposeFragment(
-        root: Any, fragmentCls: Class<*>, composerCls: Class<*>, sendTypes: List<Class<*>>,
-    ): Pair<Any, Any>? {
-        fun accept(f: Any): Pair<Any, Any>? =
-            if (sendTypes.any { it.isInstance(f) }) composerOf(f, composerCls)?.let { f to it } else null
-
+    /** Fragments reachable from the fields of a handler object (breadth-first, platform classes skipped). */
+    private fun collectFragments(root: Any, fragmentCls: Class<*>): List<Any> {
         val seen = IdentityHashMap<Any, Boolean>()
         val queue = ArrayDeque<Pair<Any, Int>>()
         val fragments = ArrayList<Any>()
@@ -269,6 +260,21 @@ object MessengerMedia {
                 queue += v to depth + 1
             }
         }
+        return fragments
+    }
+
+    /**
+     * The compose fragment is the one the send handler takes as its argument. Look for it from the handler's own
+     * fields and up the parent-fragment chain (the handler may only hold a child such as the media tray), then fall
+     * back to the compose fragments created in this process.
+     */
+    private fun findComposeFragment(
+        root: Any, fragmentCls: Class<*>, composerCls: Class<*>, sendTypes: List<Class<*>>,
+    ): Pair<Any, Any>? {
+        fun accept(f: Any): Pair<Any, Any>? =
+            if (sendTypes.any { it.isInstance(f) }) composerOf(f, composerCls)?.let { f to it } else null
+
+        val fragments = collectFragments(root, fragmentCls)
         val tree = fragmentTree(fragments, fragmentCls)
         val candidates = tree.mapNotNull { accept(it) }
         if (candidates.isNotEmpty()) {
@@ -329,10 +335,88 @@ object MessengerMedia {
         return out
     }
 
+    private const val SEND_EVENT = "com.facebook.xapp.messaging.composer.gallery.event.SendGalleryItemsEvent"
+    private const val GALLERY_ITEM = "com.facebook.xapp.messaging.gallery.model.GalleryMediaItem"
+    private const val COMPOSER_EVENT = "com.facebook.xapp.messaging.composer.event.ComposerEvent"
+    private const val SEND_SOURCE = "com.facebook.ui.media.attachments.source.MediaResourceSendSource"
+    private const val GUAVA_LIST = "com.google.common.collect.ImmutableList"
+
+    private fun allocate(cls: Class<*>): Any {
+        val u = unsafe ?: error("no Unsafe")
+        return u.javaClass.getMethod("allocateInstance", Class::class.java).invoke(u, cls)!!
+    }
+
+    private fun copyField(src: Any, srcName: String, dst: Any, dstName: String) {
+        try {
+            val s = src.javaClass.getDeclaredField(srcName).also { it.isAccessible = true }
+            val d = dst.javaClass.getDeclaredField(dstName).also { it.isAccessible = true }
+            if (s.type == d.type) d.set(dst, s.get(src))
+        } catch (_: Throwable) {}
+    }
+
+    /** Same conversion the chat's gallery tray applies in reverse: a MediaResource becomes a GalleryMediaItem. */
+    private fun toGalleryItem(mr: Any, itemCls: Class<*>, index: Int): Any {
+        val ctor = itemCls.declaredConstructors.first { it.parameterTypes.size == 1 && it.parameterTypes[0] != itemCls }
+        val builderCls = ctor.parameterTypes[0]
+        val b = builderCls.getDeclaredConstructor().also { it.isAccessible = true }.newInstance()
+        val uri = instanceFields(mr.javaClass).mapNotNull { it.get(mr) as? Uri }.let { l -> l.firstOrNull { it.scheme == "file" } ?: l.first() }
+        val path = uri.path
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        if (path != null) android.graphics.BitmapFactory.decodeFile(path, opts)
+        builderCls.declaredMethods.first { it.parameterTypes.contentEquals(arrayOf(Uri::class.java)) }.invoke(b, uri)
+        builderCls.declaredMethods.first { it.parameterTypes.contentEquals(arrayOf(String::class.java)) }.invoke(b, opts.outMimeType ?: "image/jpeg")
+        // MediaResource and the builder share field letters (A0f -> MediaResource); the item takes them from the gallery columns
+        for ((from, to) in listOf("A05" to "A03", "A06" to "A04", "A07" to "A06", "A08" to "A05", "A00" to "A00", "A04" to "A02")) copyField(mr, from, b, to)
+        val f = builderCls.getDeclaredField("A04").also { it.isAccessible = true }
+        if (f.getLong(b) == 0L) f.setLong(b, System.currentTimeMillis() + index)
+        ctor.isAccessible = true
+        return ctor.newInstance(b)
+    }
+
+    /** Post a SendGalleryItemsEvent on the thread screen's composer event bus, like the chat's own gallery Send button. */
+    private fun sendViaComposerBus(fragments: List<Any>, resources: List<Any>, mediaResource: Class<*>): Boolean {
+        return try {
+            val cl = mediaResource.classLoader
+            val composerEvent = Class.forName(COMPOSER_EVENT, false, cl)
+            val dispatch = fragments.firstNotNullOfOrNull { f ->
+                f.javaClass.declaredMethods.firstOrNull {
+                    Modifier.isPublic(it.modifiers) && !Modifier.isStatic(it.modifiers) && it.returnType == Void.TYPE &&
+                        it.parameterTypes.contentEquals(arrayOf(composerEvent))
+                }?.let { f to it }
+            } ?: return false
+            val eventCls = Class.forName(SEND_EVENT, false, cl)
+            val itemCls = Class.forName(GALLERY_ITEM, false, cl)
+            val items = resources.mapIndexed { i, mr -> toGalleryItem(mr, itemCls, i) }
+            val list = Class.forName(GUAVA_LIST, false, cl).getMethod("copyOf", java.util.Collection::class.java).invoke(null, items)
+            val source = mediaResource.declaredFields.firstOrNull { it.type.name == SEND_SOURCE }?.also { it.isAccessible = true }?.get(resources[0])
+            val event = allocate(eventCls)
+            for (f in eventCls.declaredFields) {
+                if (Modifier.isStatic(f.modifiers)) continue
+                f.isAccessible = true
+                when {
+                    f.type.name == SEND_SOURCE -> f.set(event, source)
+                    f.type.isEnum -> f.set(event, f.type.enumConstants.first { (it as Enum<*>).name == "NONE" })
+                    f.type.name == GUAVA_LIST -> f.set(event, list)
+                    f.type == String::class.java -> f.set(event, if (f.name == "A04") "SendGalleryItemsEvent" else "unspecified")
+                    f.type == java.lang.Boolean.TYPE -> f.setBoolean(event, false)
+                }
+            }
+            dispatch.second.isAccessible = true
+            dispatch.second.invoke(dispatch.first, event)
+            XposedBridge.log("$TAG: [messenger] google photos sent ${resources.size} item(s) via ${dispatch.first.javaClass.name}.${dispatch.second.name}")
+            true
+        } catch (t: Throwable) {
+            XposedBridge.log("$TAG: [messenger] composer event bus send failed: ${t.cause ?: t}")
+            false
+        }
+    }
+
     private fun sendNow(
         handler: Any, resources: List<Any>, fragmentCls: Class<*>, composerCls: Class<*>,
         mediaResource: Class<*>, sends: List<Method>,
     ) {
+        if (sendViaComposerBus(collectFragments(handler, fragmentCls), resources, mediaResource)) return
+        XposedBridge.log("$TAG: [messenger] composer event bus not available; trying the classic composer")
         val (fragment, composer) = findComposeFragment(handler, fragmentCls, composerCls, sends.map { it.parameterTypes[0] })
             ?: error("compose fragment not found")
         val send = sends.first { it.parameterTypes[0].isInstance(fragment) }
