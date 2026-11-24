@@ -107,14 +107,14 @@ object MessengerMedia {
 
         // 2) multi results arrive as ClipData only; the composer ignores results without getData()
         XposedHelpers.findAndHookMethod(
-            "com.facebook.base.activity.FbFragmentActivity", cl, "onActivityResult",
-            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java,
+            android.app.Activity::class.java, "dispatchActivityResult",
+            String::class.java, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java, String::class.java,
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    val data = param.args[2] as? Intent ?: return
-                    if (((param.args[0] as Int) and 0xFFFF) != REQUEST_PICK) return
-                    XposedBridge.log("$TAG: [messenger] pick result code=${param.args[1]} data=${data.data} clip=${data.clipData?.itemCount} type=${data.type}")
-                    if (param.args[1] != -1) return
+                    val data = param.args[3] as? Intent ?: return
+                    if (((param.args[1] as Int) and 0xFFFF) != REQUEST_PICK) return
+                    XposedBridge.log("$TAG: [messenger] pick result code=${param.args[2]} data=${data.data} clip=${data.clipData?.itemCount} type=${data.type}")
+                    if (param.args[2] != -1) return
                     if (data.data != null || !HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
                     val first = data.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return
                     data.setDataAndType(first, data.type)

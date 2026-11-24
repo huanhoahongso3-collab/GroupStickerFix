@@ -24,7 +24,8 @@ object QueryLog {
                         val b = param.args[2] as? Bundle
                         val sel = b?.getString(ContentResolver.QUERY_ARG_SQL_SELECTION)
                         val args = b?.getStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS)?.joinToString("|")
-                        val line = "$tag query $uri sel=$sel args=$args"
+                        val extra = b?.keySet()?.filter { !it.startsWith("android:query-arg-sql-selection") }?.joinToString { it + "=" + b.get(it) }
+                        val line = "$tag query $uri sel=$sel args=$args extra=[$extra]"
                         if (synchronized(seen) { seen.add(line) }) XposedBridge.log("${Resolver.TAG}: $line")
                     } catch (_: Throwable) {}
                 }
