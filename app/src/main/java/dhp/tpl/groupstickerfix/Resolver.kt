@@ -22,12 +22,13 @@ object Resolver {
         lp: XC_LoadPackage.LoadPackageParam,
         modulePath: String,
         count: Int,
+        name: String = "",
         find: (DexKitBridge) -> List<MethodData>?,
     ): List<Method>? {
         val cl = lp.classLoader
         val apk = File(lp.appInfo.sourceDir)
         val key = "${apk.length()}-${apk.lastModified()}"
-        val cache = File(lp.appInfo.dataDir, "groupstickerfix.${lp.packageName}.cache")
+        val cache = File(lp.appInfo.dataDir, "groupstickerfix.${lp.packageName}${if (name.isEmpty()) "" else ".$name"}.cache")
 
         try {
             val lines = cache.takeIf { it.exists() }?.readLines()

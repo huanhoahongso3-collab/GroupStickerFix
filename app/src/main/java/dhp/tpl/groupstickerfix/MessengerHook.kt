@@ -41,7 +41,7 @@ object MessengerHook {
             return
         }
         XposedBridge.hookMethod(handler, object : XC_MethodHook() {
-            override fun beforeHookedMethod(param: MethodHookParam) { armed.set(true) }
+            override fun beforeHookedMethod(param: MethodHookParam) { armed.set(HookPrefs.enabled(Prefs.MESSENGER_STICKER)) }
             override fun afterHookedMethod(param: MethodHookParam) { armed.set(false) }
         })
         XposedBridge.hookMethod(check, object : XC_MethodHook() {

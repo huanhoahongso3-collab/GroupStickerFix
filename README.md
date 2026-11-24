@@ -23,6 +23,11 @@ Keyboard commits (source 2) and clipboard pastes (source 1) arrive in one method
 - also runs a transparency check on every image (any route): a PNG/WebP with a real alpha channel, a large transparent area and an opaque object is treated as a sticker; photos and screenshots are not;
 - leaves other keyboard images (JPEG, ...) exactly as Zalo handles them.
 
+## Settings and extra tweaks
+Open the module app (or its entry in LSPosed) to switch each tweak on or off; changes are read live by the hooked apps.
+- **Messenger / Zalo: show all images** - the gallery query is widened to every `image/*` type (webp, heic, gif, ...) instead of a short allow-list.
+- **Messenger: multi-select Google Photos** - the Photos picker is asked for several items; two or more are sent straight to the chat without the edit screen (one photo still opens the editor). Zalo already supports this.
+
 ## Install
 1. Download `GroupStickerFix.apk` from [Releases](../../releases) (or the Actions artifact) and install it.
 2. In LSPosed, enable the module and tick **Messenger** and/or **Zalo** in its scope.

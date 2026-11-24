@@ -75,6 +75,7 @@ object ZaloHook {
         XposedBridge.hookMethod(decide, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 try {
+                    if (!HookPrefs.enabled(Prefs.ZALO_STICKER)) return
                     val payload = param.args[1] ?: return
                     val desc = param.args[2] as? ClipDescription
                     val source = param.args[3] as? Int ?: return
@@ -111,6 +112,7 @@ object ZaloHook {
         XposedBridge.hookMethod(spriteTest, object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) {
                 try {
+                    if (!HookPrefs.enabled(Prefs.ZALO_STICKER)) return
                     val payload = testPayload.get(param.thisObject) ?: return
                     if (param.result != false) return
                     if (forced.containsKey(payload)) { param.result = true; return }
@@ -126,5 +128,27 @@ object ZaloHook {
             }
         })
         XposedBridge.log("$TAG: [zalo] hooked ${decide.declaringClass.name}.${decide.name} / ${spriteTest.declaringClass.name}")
+    }
+
+    fun installAllImages(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
+        val filter = Resolver.resolve(lp, modulePath, 1, "images") { bridge ->
+            val init = bridge.findMethod {
+                matcher { usingStrings("(mime_type in ('image/jpeg', 'image/jpg', 'image/png', 'image/webp'))") }
+            }.firstOrNull { it.methodName == "<clinit>" } ?: return@resolve null
+            val getter = bridge.findMethod { matcher { declaredClass(init.className) } }.firstOrNull {
+                java.lang.reflect.Modifier.isStatic(it.modifiers) && it.returnTypeName == "java.lang.String" &&
+                    it.paramTypeNames == listOf("boolean")
+            } ?: return@resolve null
+            listOf(getter)
+        }?.single() ?: run {
+            XposedBridge.log("$TAG: [zalo] gallery image filter not found in this version")
+            return
+        }
+        XposedBridge.hookMethod(filter, object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (HookPrefs.enabled(Prefs.ZALO_ALL_IMAGES)) param.result = "(mime_type LIKE 'image/%')"
+            }
+        })
+        XposedBridge.log("$TAG: [zalo] hooked gallery filter ${filter.declaringClass.name}.${filter.name}")
     }
 }
