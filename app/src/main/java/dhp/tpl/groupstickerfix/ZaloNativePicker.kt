@@ -208,7 +208,16 @@ object ZaloNativePicker {
         val dir = File(activity.cacheDir, "groupstickerfix").also { it.mkdirs() }
         val file = File(dir, "pick_${System.currentTimeMillis()}_$index.${extensionFor(type)}")
         activity.contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
-        return itemCls.getConstructor(String::class.java).newInstance(file.absolutePath)
+        val item = itemCls.getConstructor(String::class.java).newInstance(file.absolutePath)
+        // The send job only keeps items whose "selected" flag (the class's single boxed Boolean field) is TRUE,
+        // which the gallery sets when a photo is ticked.
+        for (f in itemCls.declaredFields) {
+            if (f.type == Boolean::class.javaObjectType) {
+                f.isAccessible = true
+                f.set(item, java.lang.Boolean.TRUE)
+            }
+        }
+        return item
     }
 
     @TargetApi(33)
