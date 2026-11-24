@@ -20,6 +20,7 @@ object Prefs {
         Tweak(MESSENGER_GPHOTOS_MULTI, "Messenger: multi-select Google Photos", "Pick several photos in Google Photos and send them at once, without the edit screen"),
         Tweak(MESSENGER_NATIVE_PICKER, "Messenger: Android photo picker", "The image button opens Android's own photo picker (single or multiple) and sends the picks directly"),
         Tweak(ZALO_STICKER, "Zalo: stickers", "Send keyboard, pasted and dragged stickers as stickers"),
+        Tweak(ZALO_NATIVE_PICKER, "Zalo: Android photo picker", "The image button opens Android's own photo picker (single or multiple) instead of Zalo's gallery"),
     )
 }
 

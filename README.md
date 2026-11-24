@@ -26,6 +26,7 @@ Keyboard commits (source 2) and clipboard pastes (source 1) arrive in one method
 ## Settings and extra tweaks
 Open the module app (or its entry in LSPosed) to switch each tweak on or off; changes are read live by the hooked apps.
 - **Messenger: multi-select Google Photos** - the Photos picker is asked for several items; two or more are sent straight to the chat without the edit screen (one photo still opens the editor). Zalo already supports this.
+- **Messenger / Zalo: Android photo picker** - the chat image button opens Android's own photo picker (single or multiple) instead of the app's gallery. Messenger sends the picks directly; Zalo receives them like dropped images.
 
 ## Install
 1. Download `GroupStickerFix.apk` from [Releases](../../releases) (or the Actions artifact) and install it.
