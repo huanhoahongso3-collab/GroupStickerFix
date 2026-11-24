@@ -1,10 +1,12 @@
 package dhp.tpl.groupstickerfix
 
+import android.app.Activity
 import android.app.AndroidAppHelper
 import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -33,6 +35,11 @@ object MessengerMedia {
     private const val EDITOR_TRIGGER = "messenger_montage_swipeable_media_picker"
 
     private val captured = ThreadLocal<ArrayList<Any>?>()
+
+    /** Set by [MessengerNativePicker] when it launches the photo picker; makes even a single pick send directly. */
+    @Volatile var nativePickAt = 0L
+
+    private fun nativePickActive() = nativePickAt != 0L && SystemClock.elapsedRealtime() - nativePickAt < 10 * 60_000
 
     fun install(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         try {
@@ -106,15 +113,17 @@ object MessengerMedia {
             Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java,
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (param.args[1] == Activity.RESULT_CANCELED && nativePickAt != 0L) nativePickAt = 0L
                     val data = param.args[2] as? Intent ?: return
                     val clip = data.clipData ?: return
                     val first = clip.getItemAt(0)?.uri ?: return
-                    if (first.authority?.contains("photos", true) != true) return
-                    XposedBridge.log("$TAG: [messenger] photos result code=${param.args[1]} data=${data.data} clip=${clip.itemCount} type=${data.type}")
+                    val authority = first.authority ?: return
+                    if (!authority.contains("photos", true) && authority != "media") return
+                    XposedBridge.log("$TAG: [messenger] picker result code=${param.args[1]} data=${data.data} clip=${clip.itemCount} type=${data.type}")
                     if (param.args[1] != -1 || data.data != null) return
-                    if (!HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
+                    if (!HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI) && !nativePickActive()) return
                     data.setDataAndType(first, data.type)
-                    XposedBridge.log("$TAG: [messenger] photos result had ${clip.itemCount} items and no data; using the first")
+                    XposedBridge.log("$TAG: [messenger] picker result had ${clip.itemCount} items and no data; using the first")
                 }
             },
         )
@@ -152,8 +161,11 @@ object MessengerMedia {
                     val intentFields = intentFieldsOf(self)
                     val intent = intentFields.firstNotNullOfOrNull { it.get(self) as? Intent } ?: return
                     val uris = urisOf(intent)
-                    if (uris.size < 2 || !HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
-                    XposedBridge.log("$TAG: [messenger] google photos returned ${uris.size} items via ${self.javaClass.name}")
+                    val native = nativePickActive()
+                    if (uris.isEmpty() || (uris.size < 2 && !native)) return
+                    if (!native && !HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
+                    nativePickAt = 0L
+                    XposedBridge.log("$TAG: [messenger] picker returned ${uris.size} item(s) via ${self.javaClass.name} (native=$native)")
 
                     val method = param.method as Method
                     val type = intent.type ?: AndroidAppHelper.currentApplication()?.contentResolver?.getType(uris[0])

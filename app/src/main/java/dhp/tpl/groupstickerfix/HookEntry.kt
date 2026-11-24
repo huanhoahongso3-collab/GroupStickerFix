@@ -16,7 +16,7 @@ class HookEntry : IXposedHookZygoteInit, IXposedHookLoadPackage {
         if (lpparam.processName != lpparam.packageName) return
         try {
             when (lpparam.packageName) {
-                MessengerHook.TARGET -> { MessengerHook.install(lpparam, modulePath); MessengerMedia.install(lpparam, modulePath) }
+                MessengerHook.TARGET -> { MessengerHook.install(lpparam, modulePath); MessengerMedia.install(lpparam, modulePath); MessengerNativePicker.install(lpparam, modulePath) }
                 ZaloHook.TARGET -> ZaloHook.install(lpparam, modulePath)
             }
         } catch (t: Throwable) {
