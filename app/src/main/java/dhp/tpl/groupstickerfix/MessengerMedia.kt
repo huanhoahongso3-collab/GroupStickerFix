@@ -58,13 +58,12 @@ object MessengerMedia {
         }
 
         val editor = Resolver.resolve(lp, modulePath, 1, "gp-editor") { bridge ->
-            val handler = bridge.findMethod {
+            bridge.findMethod {
                 matcher { usingStrings("GooglePhotos", EDITOR_TRIGGER) }
-            }.firstOrNull() ?: return@resolve null
-            handler.invokes.filter {
+            }.flatMap { it.invokes }.filter {
                 Modifier.isStatic(it.modifiers) && it.returnTypeName == "void" && it.paramTypeNames.size == 4 &&
                     it.paramTypeNames[1].endsWith(".MontageComposerFragmentParams") && it.paramTypeNames[3] == "int"
-            }.take(1).ifEmpty { null }
+            }.distinctBy { it.descriptor }.take(1).ifEmpty { null }
         }?.single()
 
         val sends = Resolver.resolve(lp, modulePath, Resolver.ANY, "gp-send") { bridge ->
