@@ -34,9 +34,10 @@ object ZaloNativePicker {
 
     private val hookedActivities = HashSet<Class<*>>()
 
-    fun install() {
+    fun install(cl: ClassLoader) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         try {
+            debugReceiver(cl)
             XposedHelpers.findAndHookMethod(View::class.java, "performClick", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val v = param.thisObject as? View ?: return
@@ -56,6 +57,31 @@ object ZaloNativePicker {
             XposedBridge.log("$TAG: [zalo] hooked native image picker (button $GALLERY_BUTTON)")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: [zalo] native picker hook failed: $t")
+        }
+    }
+
+    private fun debugReceiver(cl: ClassLoader) {
+        try {
+            val c7 = XposedHelpers.findClass("z00.c7", cl)
+            for (m in c7.declaredMethods) XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    XposedBridge.log("$TAG: [zalo] dbg c7.${m.name}(${param.args.joinToString { it?.javaClass?.simpleName + ":" + it.toString().take(60) }})")
+                }
+            })
+            val a7 = XposedHelpers.findClass("z00.a7", cl)
+            for (m in a7.declaredMethods) for (impl in listOf("vg1.v7")) {
+                val k = XposedHelpers.findClass(impl, cl)
+                try {
+                    val mm = k.getDeclaredMethod(m.name, *m.parameterTypes)
+                    XposedBridge.hookMethod(mm, object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            XposedBridge.log("$TAG: [zalo] dbg v7.${m.name} called")
+                        }
+                    })
+                } catch (_: Throwable) {}
+            }
+        } catch (t: Throwable) {
+            XposedBridge.log("$TAG: [zalo] debug hooks failed: $t")
         }
     }
 
@@ -137,7 +163,8 @@ object ZaloNativePicker {
         for (uri in uris) {
             val type = activity.contentResolver.getType(uri) ?: "image/*"
             val clip = ClipData(ClipDescription("image", arrayOf(type)), ClipData.Item(uri))
-            receiver.performReceiveContent(ContentInfo.Builder(clip, ContentInfo.SOURCE_DRAG_AND_DROP).build())
+            val rest = receiver.performReceiveContent(ContentInfo.Builder(clip, ContentInfo.SOURCE_DRAG_AND_DROP).build())
+            XposedBridge.log("$TAG: [zalo] drop type=$type uri=$uri -> remaining=${rest?.clip?.itemCount}")
         }
         XposedBridge.log("$TAG: [zalo] handed ${uris.size} item(s) to ${receiver.javaClass.name}#${idName(receiver)}")
     }
