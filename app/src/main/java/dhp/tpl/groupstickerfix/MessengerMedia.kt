@@ -91,7 +91,12 @@ object MessengerMedia {
                     e ?: continue
                     val f = e.javaClass.declaredFields.firstOrNull { it.type == Intent::class.java } ?: continue
                     f.isAccessible = true
-                    (f.get(e) as? Intent)?.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    val i = f.get(e) as? Intent ?: continue
+                    // ACTION_PICK is single-choice in Photos; GET_CONTENT is the multi-select form of the same picker
+                    i.action = Intent.ACTION_GET_CONTENT
+                    i.setDataAndType(null, i.type)
+                    i.addCategory(Intent.CATEGORY_OPENABLE)
+                    i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
             }
         })
@@ -104,9 +109,10 @@ object MessengerMedia {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val data = param.args[2] as? Intent ?: return
                     val clip = data.clipData ?: return
-                    if (param.args[1] != -1 || data.data != null || clip.itemCount < 1) return
-                    val first = clip.getItemAt(0).uri ?: return
+                    val first = clip.getItemAt(0)?.uri ?: return
                     if (first.authority?.contains("photos", true) != true) return
+                    XposedBridge.log("$TAG: [messenger] photos result code=${param.args[1]} data=${data.data} clip=${clip.itemCount} type=${data.type}")
+                    if (param.args[1] != -1 || data.data != null) return
                     if (!HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
                     data.setDataAndType(first, data.type)
                     XposedBridge.log("$TAG: [messenger] photos result had ${clip.itemCount} items and no data; using the first")
