@@ -15,9 +15,10 @@ import java.lang.reflect.Method
  */
 object Resolver {
     const val TAG = "GroupStickerFix"
+    const val ANY = -1
     private var loaded = false
 
-    /** [find] returns exactly [count] methods (in a fixed order) or null if the fingerprints don't match. */
+    /** [find] returns exactly [count] methods (in a fixed order), or any non-empty list when [count] is [ANY]; null if the fingerprints don't match. */
     fun resolve(
         lp: XC_LoadPackage.LoadPackageParam,
         modulePath: String,
@@ -32,7 +33,7 @@ object Resolver {
 
         try {
             val lines = cache.takeIf { it.exists() }?.readLines()
-            if (lines != null && lines.size == count + 1 && lines[0] == key) {
+            if (lines != null && lines[0] == key && (if (count == ANY) lines.size >= 2 else lines.size == count + 1)) {
                 return lines.drop(1).map { DexMethod(it).getMethodInstance(cl) }
             }
         } catch (t: Throwable) {
@@ -45,7 +46,7 @@ object Resolver {
         }
         DexKitBridge.create(apk.absolutePath).use { bridge ->
             val found = find(bridge) ?: return null
-            if (found.size != count) return null
+            if (found.isEmpty() || (count != ANY && found.size != count)) return null
             val methods = found.map { it.getMethodInstance(cl) }
             try { cache.writeText(key + "\n" + found.joinToString("\n") { it.descriptor } + "\n") } catch (_: Throwable) {}
             return methods
