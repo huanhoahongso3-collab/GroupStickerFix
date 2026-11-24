@@ -16,7 +16,6 @@ import android.os.Looper
 import android.provider.MediaStore
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.io.File
-import java.lang.ref.WeakReference
 import android.view.ContentInfo
 import android.view.View
 import android.view.ViewGroup
@@ -39,19 +38,15 @@ object ZaloNativePicker {
     private const val CHAT_INPUT = "chatinput_text"
     private const val REQUEST_PICK = 0x5A10
 
-    private const val CHAT_VIEW = "com.zing.zalo.ui.chat.ChatView"
-    private const val MEDIA_PICKER_VIEW = "com.zing.zalo.ui.picker.mediapicker.MediaPickerView"
     private const val COMPOSE_PANEL = "com.zing.zalo.ui.widget.ChatComposePanelNew"
     private const val MEDIA_ITEM = "com.zing.zalo.data.mediapicker.model.MediaItem"
-    private const val SEND_MEDIA_BUTTON = "new_chat_input_btn_send_media"
 
     private val hookedActivities = HashSet<Class<*>>()
-    private var selectItems: Method? = null
-    private val chatViews = ArrayList<WeakReference<Any>>()
+    private var sendPhotos: Method? = null
 
     fun install(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        resolveSelection(lp, modulePath)
+        resolveSend(lp, modulePath)
         try {
             XposedHelpers.findAndHookMethod(View::class.java, "performClick", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
@@ -76,34 +71,24 @@ object ZaloNativePicker {
     }
 
     /**
-     * Zalo's own multi-select: the gallery hands the selected MediaItems to ChatView, which shows them in the composer
-     * (with the "send media" button). The method is found by what it touches: a ChatView method taking an ArrayList
-     * that updates both the media picker and the compose panel.
+     * Zalo's gallery Send button ends in ChatComposePanelNew.g(selectedItems, Z, Z, Z), which queues the upload and
+     * send of a list of MediaItems. It is found by its signature inside the (readable) panel class.
      */
-    private fun resolveSelection(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
+    private fun resolveSend(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         try {
-            val m = Resolver.resolve(lp, modulePath, 1, "media-select") { bridge ->
-                bridge.findMethod { matcher { declaredClass(CHAT_VIEW) } }.firstOrNull { md ->
-                    md.paramTypeNames == listOf("java.util.ArrayList") && md.returnTypeName == "void" &&
-                        md.invokes.any { it.className == MEDIA_PICKER_VIEW } && md.invokes.any { it.className == COMPOSE_PANEL }
+            val m = Resolver.resolve(lp, modulePath, 1, "send-photos") { bridge ->
+                bridge.findMethod { matcher { declaredClass(COMPOSE_PANEL) } }.firstOrNull { md ->
+                    md.paramTypeNames == listOf("java.util.List", "boolean", "boolean", "boolean") && md.returnTypeName == "void"
                 }?.let { listOf(it) }
             }?.firstOrNull()
             if (m == null) {
-                XposedBridge.log("$TAG: [zalo] media selection method not found in this version")
+                XposedBridge.log("$TAG: [zalo] send-photos method not found in this version")
                 return
             }
-            selectItems = m
-            XposedBridge.hookAllConstructors(m.declaringClass, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    synchronized(chatViews) {
-                        chatViews.removeAll { it.get() == null }
-                        chatViews += WeakReference(param.thisObject)
-                    }
-                }
-            })
-            XposedBridge.log("$TAG: [zalo] media selection hooked (${m.declaringClass.name}.${m.name})")
+            sendPhotos = m
+            XposedBridge.log("$TAG: [zalo] send-photos method hooked up (${m.declaringClass.name}.${m.name})")
         } catch (t: Throwable) {
-            XposedBridge.log("$TAG: [zalo] media selection lookup failed: $t")
+            XposedBridge.log("$TAG: [zalo] send-photos lookup failed: $t")
         }
     }
 
@@ -209,8 +194,6 @@ object ZaloNativePicker {
             ?: views.firstOrNull { it.receiveContentMimeTypes != null && it.isShown }
     }
 
-    private fun findById(root: View, name: String): View? = allViews(root).firstOrNull { idName(it) == name }
-
     private fun extensionFor(type: String) = when {
         type.endsWith("png") -> "png"
         type.endsWith("webp") -> "webp"
@@ -230,24 +213,21 @@ object ZaloNativePicker {
 
     @TargetApi(33)
     private fun deliver(activity: Activity, uris: List<Uri>) {
-        val select = selectItems
-        val chat = synchronized(chatViews) { chatViews.mapNotNull { it.get() }.lastOrNull() }
-        if (select != null && chat != null) {
+        val send = sendPhotos
+        val panel = allViews(activity.window.decorView).firstOrNull { it.javaClass.name == COMPOSE_PANEL }
+        if (send != null && panel != null) {
             try {
                 val itemCls = Class.forName(MEDIA_ITEM, false, activity.classLoader)
                 val items = ArrayList<Any>(uris.mapIndexed { i, u -> toMediaItem(activity, u, i, itemCls) })
-                select.isAccessible = true
-                select.invoke(chat, items)
-                XposedBridge.log("$TAG: [zalo] selected ${items.size} item(s) in the chat composer")
-                Handler(Looper.getMainLooper()).postDelayed({
-                    val send = findById(activity.window.decorView, SEND_MEDIA_BUTTON)
-                    XposedBridge.log("$TAG: [zalo] send media button: ${send?.let { "found shown=${it.isShown} enabled=${it.isEnabled}" } ?: "not found"}")
-                    send?.performClick()
-                }, 500)
+                send.isAccessible = true
+                send.invoke(panel, items, false, false, false)
+                XposedBridge.log("$TAG: [zalo] sent ${items.size} photo(s) through the chat composer")
                 return
             } catch (t: Throwable) {
-                XposedBridge.log("$TAG: [zalo] multi-select failed, falling back to drops: ${t.cause ?: t}")
+                XposedBridge.log("$TAG: [zalo] sending photos failed, falling back to drops: ${t.cause ?: t}")
             }
+        } else {
+            XposedBridge.log("$TAG: [zalo] send method=${send != null} panel=${panel != null}; falling back to drops")
         }
         deliverAsDrops(activity, uris)
     }
