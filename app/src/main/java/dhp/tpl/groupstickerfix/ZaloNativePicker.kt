@@ -14,6 +14,9 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import de.robv.android.xposed.callbacks.XC_LoadPackage
+import java.io.File
+import java.lang.ref.WeakReference
 import android.view.ContentInfo
 import android.view.View
 import android.view.ViewGroup
@@ -36,10 +39,19 @@ object ZaloNativePicker {
     private const val CHAT_INPUT = "chatinput_text"
     private const val REQUEST_PICK = 0x5A10
 
-    private val hookedActivities = HashSet<Class<*>>()
+    private const val CHAT_VIEW = "com.zing.zalo.ui.chat.ChatView"
+    private const val MEDIA_PICKER_VIEW = "com.zing.zalo.ui.picker.mediapicker.MediaPickerView"
+    private const val COMPOSE_PANEL = "com.zing.zalo.ui.widget.ChatComposePanelNew"
+    private const val MEDIA_ITEM = "com.zing.zalo.data.mediapicker.model.MediaItem"
+    private const val SEND_MEDIA_BUTTON = "new_chat_input_btn_send_media"
 
-    fun install() {
+    private val hookedActivities = HashSet<Class<*>>()
+    private var selectItems: Method? = null
+    private val chatViews = ArrayList<WeakReference<Any>>()
+
+    fun install(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        resolveSelection(lp, modulePath)
         try {
             XposedHelpers.findAndHookMethod(View::class.java, "performClick", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
@@ -60,6 +72,38 @@ object ZaloNativePicker {
             XposedBridge.log("$TAG: [zalo] hooked native image picker (button $GALLERY_BUTTON)")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: [zalo] native picker hook failed: $t")
+        }
+    }
+
+    /**
+     * Zalo's own multi-select: the gallery hands the selected MediaItems to ChatView, which shows them in the composer
+     * (with the "send media" button). The method is found by what it touches: a ChatView method taking an ArrayList
+     * that updates both the media picker and the compose panel.
+     */
+    private fun resolveSelection(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
+        try {
+            val m = Resolver.resolve(lp, modulePath, 1, "media-select") { bridge ->
+                bridge.findMethod { matcher { declaredClass(CHAT_VIEW) } }.firstOrNull { md ->
+                    md.paramTypeNames == listOf("java.util.ArrayList") && md.returnTypeName == "void" &&
+                        md.invokes.any { it.className == MEDIA_PICKER_VIEW } && md.invokes.any { it.className == COMPOSE_PANEL }
+                }?.let { listOf(it) }
+            }?.firstOrNull()
+            if (m == null) {
+                XposedBridge.log("$TAG: [zalo] media selection method not found in this version")
+                return
+            }
+            selectItems = m
+            XposedBridge.hookAllConstructors(m.declaringClass, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    synchronized(chatViews) {
+                        chatViews.removeAll { it.get() == null }
+                        chatViews += WeakReference(param.thisObject)
+                    }
+                }
+            })
+            XposedBridge.log("$TAG: [zalo] media selection hooked (${m.declaringClass.name}.${m.name})")
+        } catch (t: Throwable) {
+            XposedBridge.log("$TAG: [zalo] media selection lookup failed: $t")
         }
     }
 
@@ -165,8 +209,51 @@ object ZaloNativePicker {
             ?: views.firstOrNull { it.receiveContentMimeTypes != null && it.isShown }
     }
 
+    private fun findById(root: View, name: String): View? = allViews(root).firstOrNull { idName(it) == name }
+
+    private fun extensionFor(type: String) = when {
+        type.endsWith("png") -> "png"
+        type.endsWith("webp") -> "webp"
+        type.endsWith("gif") -> "gif"
+        type.contains("heic") || type.contains("heif") -> "heic"
+        else -> "jpg"
+    }
+
+    /** Copy a picked content Uri into the app's cache and wrap it as a Zalo MediaItem (built from a local path). */
+    private fun toMediaItem(activity: Activity, uri: Uri, index: Int, itemCls: Class<*>): Any {
+        val type = activity.contentResolver.getType(uri) ?: "image/jpeg"
+        val dir = File(activity.cacheDir, "groupstickerfix").also { it.mkdirs() }
+        val file = File(dir, "pick_${System.currentTimeMillis()}_$index.${extensionFor(type)}")
+        activity.contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
+        return itemCls.getConstructor(String::class.java).newInstance(file.absolutePath)
+    }
+
     @TargetApi(33)
     private fun deliver(activity: Activity, uris: List<Uri>) {
+        val select = selectItems
+        val chat = synchronized(chatViews) { chatViews.mapNotNull { it.get() }.lastOrNull() }
+        if (select != null && chat != null) {
+            try {
+                val itemCls = Class.forName(MEDIA_ITEM, false, activity.classLoader)
+                val items = ArrayList<Any>(uris.mapIndexed { i, u -> toMediaItem(activity, u, i, itemCls) })
+                select.isAccessible = true
+                select.invoke(chat, items)
+                XposedBridge.log("$TAG: [zalo] selected ${items.size} item(s) in the chat composer")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val send = findById(activity.window.decorView, SEND_MEDIA_BUTTON)
+                    XposedBridge.log("$TAG: [zalo] send media button: ${send?.let { "found shown=${it.isShown} enabled=${it.isEnabled}" } ?: "not found"}")
+                    send?.performClick()
+                }, 500)
+                return
+            } catch (t: Throwable) {
+                XposedBridge.log("$TAG: [zalo] multi-select failed, falling back to drops: ${t.cause ?: t}")
+            }
+        }
+        deliverAsDrops(activity, uris)
+    }
+
+    @TargetApi(33)
+    private fun deliverAsDrops(activity: Activity, uris: List<Uri>) {
         val receiver = findReceiver(activity.window.decorView) ?: error("chat input not found")
         for (uri in uris) {
             val type = activity.contentResolver.getType(uri) ?: "image/*"
