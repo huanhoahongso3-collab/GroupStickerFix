@@ -17,7 +17,7 @@ class HookEntry : IXposedHookZygoteInit, IXposedHookLoadPackage {
         try {
             when (lpparam.packageName) {
                 MessengerHook.TARGET -> { MessengerHook.install(lpparam, modulePath); MessengerMedia.install(lpparam, modulePath); MessengerNativePicker.install(lpparam, modulePath) }
-                ZaloHook.TARGET -> { ZaloHook.install(lpparam, modulePath); ZaloNativePicker.install(lpparam.classLoader) }
+                ZaloHook.TARGET -> { ZaloHook.install(lpparam, modulePath); ZaloNativePicker.install() }
             }
         } catch (t: Throwable) {
             XposedBridge.log("${Resolver.TAG}: install failed for ${lpparam.packageName}: $t")

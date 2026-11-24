@@ -2,6 +2,7 @@ package dhp.tpl.groupstickerfix
 
 import android.annotation.TargetApi
 import android.app.Activity
+import android.app.Application
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.Context
@@ -9,6 +10,9 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.view.ContentInfo
 import android.view.View
@@ -34,10 +38,9 @@ object ZaloNativePicker {
 
     private val hookedActivities = HashSet<Class<*>>()
 
-    fun install(cl: ClassLoader) {
+    fun install() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         try {
-            debugReceiver(cl)
             XposedHelpers.findAndHookMethod(View::class.java, "performClick", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val v = param.thisObject as? View ?: return
@@ -57,31 +60,6 @@ object ZaloNativePicker {
             XposedBridge.log("$TAG: [zalo] hooked native image picker (button $GALLERY_BUTTON)")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: [zalo] native picker hook failed: $t")
-        }
-    }
-
-    private fun debugReceiver(cl: ClassLoader) {
-        try {
-            val c7 = XposedHelpers.findClass("z00.c7", cl)
-            for (m in c7.declaredMethods) XposedBridge.hookMethod(m, object : XC_MethodHook() {
-                override fun beforeHookedMethod(param: MethodHookParam) {
-                    XposedBridge.log("$TAG: [zalo] dbg c7.${m.name}(${param.args.joinToString { it?.javaClass?.simpleName + ":" + it.toString().take(60) }})")
-                }
-            })
-            val a7 = XposedHelpers.findClass("z00.a7", cl)
-            for (m in a7.declaredMethods) for (impl in listOf("vg1.v7")) {
-                val k = XposedHelpers.findClass(impl, cl)
-                try {
-                    val mm = k.getDeclaredMethod(m.name, *m.parameterTypes)
-                    XposedBridge.hookMethod(mm, object : XC_MethodHook() {
-                        override fun beforeHookedMethod(param: MethodHookParam) {
-                            XposedBridge.log("$TAG: [zalo] dbg v7.${m.name} called")
-                        }
-                    })
-                } catch (_: Throwable) {}
-            }
-        } catch (t: Throwable) {
-            XposedBridge.log("$TAG: [zalo] debug hooks failed: $t")
         }
     }
 
@@ -127,13 +105,43 @@ object ZaloNativePicker {
                 data.data?.let(uris::add)
                 data.clipData?.let { c -> for (i in 0 until c.itemCount) c.getItemAt(i).uri?.let(uris::add) }
                 XposedBridge.log("$TAG: [zalo] picker returned ${uris.size} item(s)")
-                try {
-                    deliver(activity, uris.toList())
-                } catch (t: Throwable) {
-                    XposedBridge.log("$TAG: [zalo] delivering picks failed: ${t.cause ?: t}")
-                }
+                deliverWhenResumed(activity, uris.toList())
             }
         })
+    }
+
+    /**
+     * Zalo's chat only accepts dropped content while its screen is resumed, and onActivityResult runs before that,
+     * so wait for the activity to resume (with a fallback timer) before handing the picks over.
+     */
+    private fun deliverWhenResumed(activity: Activity, uris: List<Uri>) {
+        var done = false
+        val handler = Handler(Looper.getMainLooper())
+        val run = Runnable {
+            if (done) return@Runnable
+            done = true
+            try {
+                deliver(activity, uris)
+            } catch (t: Throwable) {
+                XposedBridge.log("$TAG: [zalo] delivering picks failed: ${t.cause ?: t}")
+            }
+        }
+        val app = activity.application
+        val callbacks = object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(a: Activity) {
+                if (a !== activity) return
+                app.unregisterActivityLifecycleCallbacks(this)
+                handler.postDelayed(run, 400)
+            }
+            override fun onActivityCreated(a: Activity, b: Bundle?) {}
+            override fun onActivityStarted(a: Activity) {}
+            override fun onActivityPaused(a: Activity) {}
+            override fun onActivityStopped(a: Activity) {}
+            override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
+            override fun onActivityDestroyed(a: Activity) {}
+        }
+        app.registerActivityLifecycleCallbacks(callbacks)
+        handler.postDelayed({ app.unregisterActivityLifecycleCallbacks(callbacks); run.run() }, 3000)
     }
 
     private fun idName(v: View): String = try {
