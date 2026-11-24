@@ -34,6 +34,7 @@ object MessengerMedia {
 
     fun install(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         try { installAllImages() } catch (t: Throwable) { XposedBridge.log("$TAG: [messenger] all-images hook failed: $t") }
+        try { logIncomingShares() } catch (t: Throwable) { XposedBridge.log("$TAG: [messenger] launch log failed: $t") }
         try { installGooglePhotos(lp, modulePath) } catch (t: Throwable) { XposedBridge.log("$TAG: [messenger] gphotos hook failed: $t") }
     }
 
@@ -55,6 +56,22 @@ object MessengerMedia {
             },
         )
         XposedBridge.log("$TAG: [messenger] hooked gallery MediaStore query")
+    }
+
+    private fun logIncomingShares() {
+        XposedHelpers.findAndHookMethod(
+            android.app.Instrumentation::class.java, "callActivityOnCreate",
+            android.app.Activity::class.java, android.os.Bundle::class.java,
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val a = param.args[0] as android.app.Activity
+                    val i = a.intent ?: return
+                    val act = i.action ?: return
+                    if (act == Intent.ACTION_MAIN) return
+                    XposedBridge.log("$TAG: [messenger] activity ${a.javaClass.name} action=$act type=${i.type} data=${i.data} clip=${i.clipData?.itemCount}")
+                }
+            },
+        )
     }
 
     private const val MIME_FILTER = "(mime_type in (?, ?, ?))"
@@ -105,19 +122,20 @@ object MessengerMedia {
             }
         })
 
-        // 2) multi results arrive as ClipData only; the composer ignores results without getData()
+        // 2) Fragment results come back through the activity-result registry with its own request codes, so match on
+        //    shape instead: several items in ClipData and no getData() (the composer ignores results without getData()).
         XposedHelpers.findAndHookMethod(
             android.app.Activity::class.java, "dispatchActivityResult",
             String::class.java, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java, String::class.java,
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val data = param.args[3] as? Intent ?: return
-                    if (((param.args[1] as Int) and 0xFFFF) != REQUEST_PICK) return
-                    XposedBridge.log("$TAG: [messenger] pick result code=${param.args[2]} data=${data.data} clip=${data.clipData?.itemCount} type=${data.type}")
-                    if (param.args[2] != -1) return
-                    if (data.data != null || !HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
-                    val first = data.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return
-                    data.setDataAndType(first, data.type)
+                    val clip = data.clipData
+                    XposedBridge.log("$TAG: [messenger] activity result code=${param.args[1]} result=${param.args[2]} data=${data.data} clip=${clip?.itemCount} type=${data.type}")
+                    if (param.args[2] != -1 || data.data != null || clip == null || clip.itemCount < 1) return
+                    if (!HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
+                    data.setDataAndType(clip.getItemAt(0).uri, data.type)
+                    XposedBridge.log("$TAG: [messenger] result had ${clip.itemCount} items and no data; set data to first")
                 }
             },
         )
@@ -125,7 +143,11 @@ object MessengerMedia {
         // 3) capture the MediaResource instead of opening the editor (only while we drive the runnable)
         XposedBridge.hookMethod(editor, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
-                val list = captured.get() ?: return
+                val list = captured.get()
+                if (list == null) {
+                    XposedBridge.log("$TAG: [messenger] editor opened from: " + Throwable().stackTrace.take(20).joinToString(" < ") { it.className.substringAfterLast('.') + "." + it.methodName })
+                    return
+                }
                 param.result = null
                 val params = param.args[1] ?: return
                 val f = params.javaClass.declaredFields.firstOrNull { it.type == mediaResource } ?: return
