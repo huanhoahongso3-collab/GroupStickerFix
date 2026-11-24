@@ -98,7 +98,9 @@ object MessengerMedia {
                     e ?: continue
                     val f = e.javaClass.declaredFields.firstOrNull { it.type == Intent::class.java } ?: continue
                     f.isAccessible = true
-                    (f.get(e) as? Intent)?.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    val i = f.get(e) as? Intent ?: continue
+                    i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    XposedBridge.log("$TAG: [messenger] photos entry intent=$i multi=true")
                 }
             }
         })
@@ -110,7 +112,9 @@ object MessengerMedia {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val data = param.args[2] as? Intent ?: return
-                    if (((param.args[0] as Int) and 0xFFFF) != REQUEST_PICK || param.args[1] != -1) return
+                    if (((param.args[0] as Int) and 0xFFFF) != REQUEST_PICK) return
+                    XposedBridge.log("$TAG: [messenger] pick result code=${param.args[1]} data=${data.data} clip=${data.clipData?.itemCount} type=${data.type}")
+                    if (param.args[1] != -1) return
                     if (data.data != null || !HookPrefs.enabled(Prefs.MESSENGER_GPHOTOS_MULTI)) return
                     val first = data.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri ?: return
                     data.setDataAndType(first, data.type)
@@ -138,9 +142,10 @@ object MessengerMedia {
                     val self = param.thisObject
                     val intent = field(self, Intent::class.java) as? Intent ?: return
                     val uris = urisOf(intent)
+                    XposedBridge.log("$TAG: [messenger] VYV.run uris=${uris.size}")
                     if (uris.size < 2) return
                     param.result = null
-                    val lifecycle = self.javaClass.declaredFields.firstOrNull { it.type != Intent::class.java }
+                    val lifecycle = self.javaClass.declaredFields.firstOrNull { it.type != Intent::class.java && !Modifier.isStatic(it.modifiers) }
                         ?.also { it.isAccessible = true }?.get(self) ?: return
                     val ctor = self.javaClass.declaredConstructors.first().also { it.isAccessible = true }
                     val resources = ArrayList<Any>()
