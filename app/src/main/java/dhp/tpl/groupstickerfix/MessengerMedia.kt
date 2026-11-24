@@ -131,6 +131,18 @@ object MessengerMedia {
             }
         })
 
+        // remember compose fragment instances for the send step
+        sends.map { it.parameterTypes[0] }.distinct().forEach { cls ->
+            XposedBridge.hookAllConstructors(cls, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    synchronized(composeFragments) {
+                        composeFragments.removeAll { it.get() == null }
+                        composeFragments += java.lang.ref.WeakReference(param.thisObject)
+                    }
+                }
+            })
+        }
+
         // 4) handlers: several Uris -> one clone per Uri, then send all together
         val handlerHook = object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
@@ -224,35 +236,61 @@ object MessengerMedia {
     private fun isPlatform(name: String) =
         name.startsWith("java.") || name.startsWith("android.") || name.startsWith("kotlin.") || name.startsWith("dalvik.")
 
-    /** The compose fragment (a Fragment that holds the composer view) reachable from a handler object. */
-    private fun findComposeFragment(root: Any, fragmentCls: Class<*>, composerCls: Class<*>): Pair<Any, Any>? {
+    private val composeFragments = ArrayList<java.lang.ref.WeakReference<Any>>()
+
+    private fun call(o: Any, name: String): Any? = try { o.javaClass.getMethod(name).invoke(o) } catch (_: Throwable) { null }
+
+    private fun composerOf(fragment: Any, composerCls: Class<*>): Any? =
+        instanceFields(fragment.javaClass).firstNotNullOfOrNull { f -> f.get(fragment)?.takeIf { composerCls.isInstance(it) } }
+
+    /**
+     * The compose fragment is the one the send handler takes as its argument. Look for it from the handler's own
+     * fields and up the parent-fragment chain (the handler may only hold a child such as the media tray), then fall
+     * back to the compose fragments created in this process.
+     */
+    private fun findComposeFragment(
+        root: Any, fragmentCls: Class<*>, composerCls: Class<*>, sendTypes: List<Class<*>>,
+    ): Pair<Any, Any>? {
+        fun accept(f: Any): Pair<Any, Any>? =
+            if (sendTypes.any { it.isInstance(f) }) composerOf(f, composerCls)?.let { f to it } else null
+
         val seen = IdentityHashMap<Any, Boolean>()
         val queue = ArrayDeque<Pair<Any, Int>>()
+        val fragments = ArrayList<Any>()
         queue += root to 0
         seen[root] = true
         while (queue.isNotEmpty() && seen.size < 4000) {
             val (o, depth) = queue.removeFirst()
-            val fields = instanceFields(o.javaClass)
-            if (fragmentCls.isInstance(o)) {
-                val composer = fields.firstNotNullOfOrNull { f -> f.get(o)?.takeIf { composerCls.isInstance(it) } }
-                if (composer != null) return o to composer
-            }
+            if (fragmentCls.isInstance(o)) fragments += o
             if (depth >= 4) continue
-            for (f in fields) {
+            for (f in instanceFields(o.javaClass)) {
                 val v = f.get(o) ?: continue
                 if (isPlatform(v.javaClass.name) || seen.put(v, true) != null) continue
                 queue += v to depth + 1
             }
         }
-        return null
+        for (start in fragments) {
+            var cur: Any? = start
+            var hops = 0
+            while (cur != null && hops++ < 8) {
+                accept(cur)?.let { return it }
+                cur = call(cur, "getParentFragment")
+            }
+        }
+        XposedBridge.log("$TAG: [messenger] compose fragment not reachable from handler (fragments=${fragments.map { it.javaClass.name }}); trying live instances")
+
+        val live = synchronized(composeFragments) { composeFragments.mapNotNull { it.get() } }.asReversed()
+        val ready = live.filter { call(it, "isAdded") == true }
+        return (ready.firstOrNull { call(it, "isResumed") == true } ?: ready.firstOrNull())?.let(::accept)
     }
 
     private fun sendNow(
         handler: Any, resources: List<Any>, fragmentCls: Class<*>, composerCls: Class<*>,
         mediaResource: Class<*>, sends: List<Method>,
     ) {
-        val (fragment, composer) = findComposeFragment(handler, fragmentCls, composerCls) ?: error("compose fragment not found")
-        val send = sends.firstOrNull { it.parameterTypes[0].isInstance(fragment) } ?: error("send handler not found for ${fragment.javaClass.name}")
+        val (fragment, composer) = findComposeFragment(handler, fragmentCls, composerCls, sends.map { it.parameterTypes[0] })
+            ?: error("compose fragment not found")
+        val send = sends.first { it.parameterTypes[0].isInstance(fragment) }
         val setAttachments = composerCls.declaredMethods.single {
             Modifier.isPublic(it.modifiers) && !Modifier.isStatic(it.modifiers) && it.returnType == Void.TYPE &&
                 it.parameterTypes.contentEquals(arrayOf(List::class.java))
