@@ -29,6 +29,7 @@ import java.lang.reflect.Method
 object ZaloNativePicker {
     private const val TAG = Resolver.TAG
     private const val GALLERY_BUTTON = "new_chat_input_btn_show_gallery"
+    private const val CHAT_INPUT = "chatinput_text"
     private const val REQUEST_PICK = 0x5A10
 
     private val hookedActivities = HashSet<Class<*>>()
@@ -109,11 +110,25 @@ object ZaloNativePicker {
         })
     }
 
+    private fun idName(v: View): String = try {
+        if (v.id != View.NO_ID) v.resources.getResourceEntryName(v.id) else "-"
+    } catch (_: Throwable) { "?" }
+
+    /** Views reachable from [v], depth first. */
+    private fun allViews(v: View, out: MutableList<View> = ArrayList()): List<View> {
+        out += v
+        if (v is ViewGroup) for (i in 0 until v.childCount) allViews(v.getChildAt(i), out)
+        return out
+    }
+
     @TargetApi(33)
-    private fun findReceiver(v: View): View? {
-        if (v.receiveContentMimeTypes != null && v.isShown) return v
-        if (v is ViewGroup) for (i in 0 until v.childCount) findReceiver(v.getChildAt(i))?.let { return it }
-        return null
+    private fun findReceiver(root: View): View? {
+        val views = allViews(root)
+        XposedBridge.log("$TAG: [zalo] content receivers: " + views.filter { it.receiveContentMimeTypes != null }
+            .joinToString { "${it.javaClass.name}#${idName(it)}" })
+        return views.firstOrNull { idName(it) == CHAT_INPUT && it.isShown }
+            ?: views.firstOrNull { it.receiveContentMimeTypes != null && it.isShown && it is android.widget.EditText }
+            ?: views.firstOrNull { it.receiveContentMimeTypes != null && it.isShown }
     }
 
     @TargetApi(33)
@@ -124,6 +139,6 @@ object ZaloNativePicker {
             val clip = ClipData(ClipDescription("image", arrayOf(type)), ClipData.Item(uri))
             receiver.performReceiveContent(ContentInfo.Builder(clip, ContentInfo.SOURCE_DRAG_AND_DROP).build())
         }
-        XposedBridge.log("$TAG: [zalo] handed ${uris.size} item(s) to ${receiver.javaClass.name}")
+        XposedBridge.log("$TAG: [zalo] handed ${uris.size} item(s) to ${receiver.javaClass.name}#${idName(receiver)}")
     }
 }
