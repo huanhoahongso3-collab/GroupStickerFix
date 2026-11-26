@@ -36,7 +36,7 @@ Open the module app (or its entry in LSPosed) to switch each tweak on or off; ch
 ## Troubleshooting
 The module logs lines tagged `GroupStickerFix` to the LSPosed module log. In Zalo every received image logs its source, MIME, label, extras and the decision taken, which shows what tag your keyboard sets. If a sticker still arrives as an image, open an issue with those lines and the app version.
 
-Tested against Messenger 583.0.0.29.95 and Zalo 26.10.01. Other versions rely on the DexKit fingerprints still matching.
+Tested against Messenger 587.0.0.54.96 and 588.1.0.66.98, and Zalo 26.10.02. Other versions rely on the DexKit fingerprints still matching.
 
 ## Build
 CI (`.github/workflows/build.yml`) builds and signs a release APK with Gradle 8.9 and JDK 17. It needs these repository secrets: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`. Pushing a `v*` tag attaches the APK to a GitHub release.
