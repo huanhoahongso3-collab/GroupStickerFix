@@ -378,8 +378,15 @@ object MessengerMedia {
         val path = uri.path
         val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (path != null) android.graphics.BitmapFactory.decodeFile(path, opts)
-        builderCls.declaredMethods.first { it.parameterTypes.contentEquals(arrayOf(Uri::class.java)) }.invoke(b, uri)
-        builderCls.declaredMethods.first { it.parameterTypes.contentEquals(arrayOf(String::class.java)) }.invoke(b, opts.outMimeType ?: "image/jpeg")
+        val mime = opts.outMimeType ?: "image/jpeg"
+        // older builds set these through builder methods; newer ones expose public fields
+        val uriSetter = builderCls.declaredMethods.firstOrNull { it.parameterTypes.contentEquals(arrayOf(Uri::class.java)) }
+        val mimeSetter = builderCls.declaredMethods.firstOrNull { it.parameterTypes.contentEquals(arrayOf(String::class.java)) }
+        if (uriSetter != null) uriSetter.invoke(b, uri)
+        else builderCls.declaredFields.first { it.type == Uri::class.java }.also { it.isAccessible = true }.set(b, uri)
+        if (mimeSetter != null) mimeSetter.invoke(b, mime)
+        else builderCls.declaredFields.filter { it.type == String::class.java }
+            .let { l -> l.firstOrNull { it.name == "A0B" } ?: l.last() }.also { it.isAccessible = true }.set(b, mime)
         // MediaResource and the builder share field letters (A0f -> MediaResource); the item takes them from the gallery columns
         for ((from, to) in listOf("A05" to "A03", "A06" to "A04", "A07" to "A06", "A08" to "A05", "A00" to "A00", "A04" to "A02")) copyField(mr, from, b, to)
         try {
