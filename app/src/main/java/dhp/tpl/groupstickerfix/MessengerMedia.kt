@@ -68,25 +68,28 @@ object MessengerMedia {
             bridge.findMethod {
                 matcher { usingStrings("GooglePhotos", EDITOR_TRIGGER) }
             }.flatMap { it.invokes }.filter {
-                Modifier.isStatic(it.modifiers) && it.returnTypeName == "void" && it.paramTypeNames.size == 4 &&
+                it.returnTypeName == "void" && it.paramTypeNames.size == 4 &&
                     it.paramTypeNames[1].endsWith(".MontageComposerFragmentParams") && it.paramTypeNames[3] == "int"
             }.distinctBy { it.descriptor }.take(1).ifEmpty { null }
         }?.single()
 
-        val sends = Resolver.resolve(lp, modulePath, Resolver.ANY, "gp-send") { bridge ->
-            bridge.findMethod {
-                matcher { usingStrings("ComposeFragment.onSendClicked") }
-            }.filter { Modifier.isStatic(it.modifiers) && it.paramTypeNames.size == 1 }.ifEmpty { null }
-        }
+        // only the fallback path needs these; the chat's event bus sends without them
+        val sends: List<Method> = try {
+            Resolver.resolve(lp, modulePath, Resolver.ANY, "gp-send") { bridge ->
+                bridge.findMethod {
+                    matcher { usingStrings("ComposeFragment.onSendClicked") }
+                }.filter { Modifier.isStatic(it.modifiers) && it.paramTypeNames.size == 1 }.ifEmpty { null }
+            }.orEmpty()
+        } catch (t: Throwable) { emptyList() }
 
-        if (entries == null || handlers == null || editor == null || sends == null) {
+        if (entries == null || handlers == null || editor == null) {
             XposedBridge.log("$TAG: [messenger] google photos code not found in this version " +
-                "(entries=${entries != null} handlers=${handlers != null} editor=${editor != null} send=${sends != null})")
+                "(entries=${entries != null} handlers=${handlers != null} editor=${editor != null})")
             return
         }
 
         val mediaResource = Class.forName(MEDIA_RESOURCE, false, cl)
-        val composerCls = Class.forName(COMPOSER_VIEW, false, cl)
+        val composerCls: Class<*>? = try { Class.forName(COMPOSER_VIEW, false, cl) } catch (_: Throwable) { null }
         val fragmentCls = Class.forName(FRAGMENT, false, cl)
 
         // 1) ask Photos for several items
@@ -108,7 +111,7 @@ object MessengerMedia {
         })
 
         // 2) the composer drops a result without getData(); a multi-pick may carry only ClipData
-        XposedHelpers.findAndHookMethod(
+        try { XposedHelpers.findAndHookMethod(
             "com.facebook.base.activity.FbFragmentActivity", cl, "onActivityResult",
             Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Intent::class.java,
             object : XC_MethodHook() {
@@ -126,14 +129,14 @@ object MessengerMedia {
                     XposedBridge.log("$TAG: [messenger] picker result had ${clip.itemCount} items and no data; using the first")
                 }
             },
-        )
+        ) } catch (t: Throwable) { XposedBridge.log("$TAG: [messenger] activity result hook failed: $t") }
 
         // 3) while we drive a handler clone, take its MediaResource instead of opening the editor
         XposedBridge.hookMethod(editor, object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val list = captured.get() ?: return
                 param.result = null
-                val params = param.args[1] ?: return
+                val params = param.args.firstOrNull { it?.javaClass?.name?.endsWith(".MontageComposerFragmentParams") == true } ?: return
                 val f = params.javaClass.declaredFields.firstOrNull { it.type == mediaResource } ?: return
                 f.isAccessible = true
                 f.get(params)?.let(list::add)
@@ -379,8 +382,10 @@ object MessengerMedia {
         builderCls.declaredMethods.first { it.parameterTypes.contentEquals(arrayOf(String::class.java)) }.invoke(b, opts.outMimeType ?: "image/jpeg")
         // MediaResource and the builder share field letters (A0f -> MediaResource); the item takes them from the gallery columns
         for ((from, to) in listOf("A05" to "A03", "A06" to "A04", "A07" to "A06", "A08" to "A05", "A00" to "A00", "A04" to "A02")) copyField(mr, from, b, to)
-        val f = builderCls.getDeclaredField("A04").also { it.isAccessible = true }
-        if (f.getLong(b) == 0L) f.setLong(b, System.currentTimeMillis() + index)
+        try {
+            val f = builderCls.getDeclaredField("A04").also { it.isAccessible = true }
+            if (f.getLong(b) == 0L) f.setLong(b, System.currentTimeMillis() + index)
+        } catch (_: Throwable) {}
         ctor.isAccessible = true
         return ctor.newInstance(b)
     }
@@ -424,10 +429,11 @@ object MessengerMedia {
     }
 
     private fun sendNow(
-        handler: Any, resources: List<Any>, fragmentCls: Class<*>, composerCls: Class<*>,
+        handler: Any, resources: List<Any>, fragmentCls: Class<*>, composerCls: Class<*>?,
         mediaResource: Class<*>, sends: List<Method>,
     ) {
         if (sendViaComposerBus(collectFragments(handler, fragmentCls), resources, mediaResource)) return
+        if (composerCls == null || sends.isEmpty()) error("no composer event bus and no classic composer in this version")
         XposedBridge.log("$TAG: [messenger] composer event bus not available; trying the classic composer")
         val (fragment, composer) = findComposeFragment(handler, fragmentCls, composerCls, sends.map { it.parameterTypes[0] })
             ?: error("compose fragment not found")
