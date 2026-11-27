@@ -16,7 +16,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import de.robv.android.xposed.callbacks.XC_LoadPackage
-import org.luckypray.dexkit.DexKitBridge
 import java.io.File
 import android.view.ContentInfo
 import android.view.View
@@ -25,7 +24,6 @@ import android.webkit.MimeTypeMap
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
-import java.lang.reflect.Field
 import java.lang.reflect.Method
 
 /**
@@ -43,21 +41,15 @@ object ZaloNativePicker {
     private const val REQUEST_PICK = 0x5A10
 
     private const val COMPOSE_PANEL = "com.zing.zalo.ui.widget.ChatComposePanelNew"
+    private const val VIDEO_ITEM = "com.zing.zalo.data.mediapicker.model.VideoItem"
     private const val MEDIA_ITEM = "com.zing.zalo.data.mediapicker.model.MediaItem"
 
     private val hookedActivities = HashSet<Class<*>>()
     private var sendPhotos: Method? = null
-    private var mediaTypeField: Field? = null
-    private var videoTypeValue: Int = 3
-    private var mediaMimeField: Field? = null
-    private var mediaDurationField: Field? = null
-    private var mediaWidthField: Field? = null
-    private var mediaHeightField: Field? = null
 
     fun install(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         resolveSend(lp, modulePath)
-        resolveVideoFields(lp, modulePath)
         try {
             XposedHelpers.findAndHookMethod(View::class.java, "performClick", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
@@ -100,92 +92,6 @@ object ZaloNativePicker {
             XposedBridge.log("$TAG: [zalo] send-photos method hooked up (${m.declaringClass.name}.${m.name})")
         } catch (t: Throwable) {
             XposedBridge.log("$TAG: [zalo] send-photos lookup failed: $t")
-        }
-    }
-
-    private fun resolveVideoFields(lp: XC_LoadPackage.LoadPackageParam, modulePath: String) {
-        try {
-            val itemCls = Class.forName(MEDIA_ITEM, false, lp.classLoader)
-            val apk = File(lp.appInfo.sourceDir)
-            val key = "${apk.length()}-${apk.lastModified()}"
-            val cache = File(lp.appInfo.dataDir, "groupstickerfix.${lp.packageName}.zalo-video.cache")
-
-            fun fieldOrNull(name: String): Field? =
-                name.takeIf { it.isNotEmpty() }?.let { n -> itemCls.declaredFields.firstOrNull { it.name == n }?.apply { isAccessible = true } }
-
-            try {
-                val lines = cache.takeIf { it.exists() }?.readLines()
-                if (lines != null && lines.size >= 7 && lines[0] == key) {
-                    mediaTypeField = fieldOrNull(lines[1])
-                    videoTypeValue = lines[2].toIntOrNull() ?: 3
-                    mediaMimeField = fieldOrNull(lines[3])
-                    mediaDurationField = fieldOrNull(lines[4])
-                    mediaWidthField = fieldOrNull(lines[5])
-                    mediaHeightField = fieldOrNull(lines[6])
-                    XposedBridge.log("$TAG: [zalo] video fields (cached): type=${mediaTypeField?.name}=$videoTypeValue mime=${mediaMimeField?.name} dur=${mediaDurationField?.name} w=${mediaWidthField?.name} h=${mediaHeightField?.name}")
-                    return
-                }
-            } catch (_: Throwable) {}
-
-            Resolver.ensureLoaded(modulePath)
-            var typeName = ""
-            var typeVal = 3
-            var mimeName = ""
-            var durName = ""
-            var wName = ""
-            var hName = ""
-            DexKitBridge.create(apk.absolutePath).use { bridge ->
-                val boolMethods = bridge.findMethod {
-                    matcher { declaredClass(MEDIA_ITEM); returnType("boolean"); paramCount(0) }
-                }
-                for (candidate in listOf(3, 2, 1)) {
-                    val m = bridge.findMethod {
-                        matcher { declaredClass(MEDIA_ITEM); returnType("boolean"); paramCount(0); usingNumbers(candidate) }
-                    }.firstOrNull { md -> md.usingFields.any { it.field.typeName == "int" } }
-                    if (m != null) {
-                        typeName = m.usingFields.first { it.field.typeName == "int" }.field.name
-                        typeVal = candidate
-                        break
-                    }
-                }
-                val mimeMethod = boolMethods.firstOrNull { md ->
-                    md.usingStrings.any { it.contains("video", true) } &&
-                        md.usingFields.any { it.field.typeName == "java.lang.String" }
-                } ?: bridge.findMethod {
-                    matcher { declaredClass(MEDIA_ITEM); usingStrings("video") }
-                }.firstOrNull { md -> md.usingFields.any { it.field.typeName == "java.lang.String" } }
-                    ?: bridge.findMethod {
-                        matcher { declaredClass(MEDIA_ITEM); usingStrings("image") }
-                    }.firstOrNull { md -> md.usingFields.any { it.field.typeName == "java.lang.String" } }
-                mimeName = mimeMethod?.usingFields?.firstOrNull { it.field.typeName == "java.lang.String" }?.field?.name.orEmpty()
-
-                val durMethod = bridge.findMethod {
-                    matcher { declaredClass(MEDIA_ITEM); usingNumbers(1000) }
-                }.firstOrNull { md -> md.usingFields.any { it.field.typeName == "long" } }
-                    ?: bridge.findMethod {
-                        matcher { usingStrings("duration", "mime_type") }
-                    }.firstOrNull { md -> md.usingFields.any { it.field.declaredClassName == MEDIA_ITEM && it.field.typeName == "long" } }
-                durName = durMethod?.usingFields?.firstOrNull { it.field.declaredClassName == MEDIA_ITEM && it.field.typeName == "long" }?.field?.name.orEmpty()
-
-                // The (String) constructor stores the decoded image bounds into two int fields: width, then height.
-                val ctor = bridge.findMethod {
-                    matcher { declaredClass(MEDIA_ITEM); name("<init>"); paramTypes("java.lang.String") }
-                }.firstOrNull()
-                val ints = ctor?.usingFields?.map { it.field }
-                    ?.filter { it.declaredClassName == MEDIA_ITEM && it.typeName == "int" }
-                    ?.map { it.name }?.distinct().orEmpty()
-                if (ints.size >= 2) { wName = ints[0]; hName = ints[1] }
-            }
-            mediaTypeField = fieldOrNull(typeName)
-            videoTypeValue = typeVal
-            mediaMimeField = fieldOrNull(mimeName)
-            mediaDurationField = fieldOrNull(durName)
-            mediaWidthField = fieldOrNull(wName)
-            mediaHeightField = fieldOrNull(hName)
-            try { cache.writeText("$key\n$typeName\n$typeVal\n$mimeName\n$durName\n$wName\n$hName\n") } catch (_: Throwable) {}
-            XposedBridge.log("$TAG: [zalo] video fields: type=${mediaTypeField?.name}=$videoTypeValue mime=${mediaMimeField?.name} dur=${mediaDurationField?.name} w=${mediaWidthField?.name} h=${mediaHeightField?.name}")
-        } catch (t: Throwable) {
-            XposedBridge.log("$TAG: [zalo] video fields lookup failed: $t")
         }
     }
 
@@ -306,7 +212,9 @@ object ZaloNativePicker {
         val dir = File(activity.cacheDir, "groupstickerfix").also { it.mkdirs() }
         val file = File(dir, "pick_${System.currentTimeMillis()}_$index.${extensionFor(type)}")
         activity.contentResolver.openInputStream(uri)!!.use { input -> file.outputStream().use { input.copyTo(it) } }
-        val item = itemCls.getConstructor(String::class.java).newInstance(file.absolutePath)
+        val isVideo = type.startsWith("video/")
+        val item = if (isVideo) buildVideoItem(activity, itemCls, file) else
+            itemCls.getConstructor(String::class.java).newInstance(file.absolutePath)
         // The send job only keeps items whose "selected" flag (the class's single boxed Boolean field) is TRUE,
         // which the gallery sets when a photo is ticked.
         for (f in itemCls.declaredFields) {
@@ -315,39 +223,54 @@ object ZaloNativePicker {
                 f.set(item, java.lang.Boolean.TRUE)
             }
         }
-        if (type.startsWith("video/")) {
-            mediaTypeField?.setInt(item, videoTypeValue)
-            mediaMimeField?.set(item, type)
-            var durationMs = 0L
+        return item
+    }
+
+    private fun setField(obj: Any, name: String, value: Any?) {
+        var k: Class<*>? = obj.javaClass
+        while (k != null) {
             try {
-                val mmr = MediaMetadataRetriever()
-                try {
-                    mmr.setDataSource(file.absolutePath)
-                    fun meta(k: Int) = mmr.extractMetadata(k)?.toIntOrNull() ?: 0
-                    durationMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                    var w = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                    var h = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                    val rot = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                    if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
-                    if (w > 0 && h > 0) {
-                        mediaWidthField?.setInt(item, w)
-                        mediaHeightField?.setInt(item, h)
-                    }
-                } finally {
-                    mmr.release()
-                }
-            } catch (_: Throwable) {}
-            if (durationMs > 0L) mediaDurationField?.setLong(item, durationMs)
-            XposedBridge.log("$TAG: [zalo] built video MediaItem path=${file.name} type=$type dur=${durationMs}ms " +
-                "typeField=${mediaTypeField?.name}=$videoTypeValue mimeField=${mediaMimeField?.name} durField=${mediaDurationField?.name} size=${mediaWidthField?.getInt(item)}x${mediaHeightField?.getInt(item)}")
+                val f = k.getDeclaredField(name)
+                f.isAccessible = true
+                f.set(obj, value)
+                return
+            } catch (_: NoSuchFieldException) { k = k.superclass }
         }
-        if (type.startsWith("video/")) {
+        XposedBridge.log("$TAG: [zalo] no field $name on ${obj.javaClass.name}")
+    }
+
+    /**
+     * Zalo's send job treats only VideoItem (a MediaItem subclass) as a video; a plain MediaItem goes out as a photo
+     * and fails. Mirror what the gallery's MediaStore loader fills in: path, name, duration, size and dates.
+     */
+    private fun buildVideoItem(activity: Activity, itemCls: Class<*>, file: File): Any {
+        val cls = Class.forName(VIDEO_ITEM, false, activity.classLoader)
+        val item = cls.getDeclaredConstructor().newInstance()
+        var durationMs = 0L
+        var w = 0
+        var h = 0
+        try {
+            val mmr = MediaMetadataRetriever()
             try {
-                XposedBridge.log("$TAG: [zalo] video item fields: " + itemCls.declaredFields
-                    .filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
-                    .joinToString { f -> f.isAccessible = true; "${f.name}=${f.get(item)}" })
-            } catch (_: Throwable) {}
-        }
+                mmr.setDataSource(file.absolutePath)
+                fun meta(k: Int) = mmr.extractMetadata(k)?.toIntOrNull() ?: 0
+                durationMs = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                w = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                h = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                val rot = meta(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
+            } finally {
+                mmr.release()
+            }
+        } catch (_: Throwable) {}
+        setField(item, "c", file.absolutePath)
+        setField(item, "f", file.name)
+        setField(item, "s1", durationMs)
+        setField(item, "g", System.currentTimeMillis() / 1000)
+        setField(item, "z", w)
+        setField(item, "C", h)
+        setField(item, "j", false)
+        XposedBridge.log("$TAG: [zalo] built VideoItem ${file.name} dur=${durationMs}ms ${w}x$h size=${file.length()}")
         return item
     }
 
