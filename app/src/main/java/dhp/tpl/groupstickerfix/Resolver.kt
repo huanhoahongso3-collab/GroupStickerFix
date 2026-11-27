@@ -18,6 +18,13 @@ object Resolver {
     const val ANY = -1
     private var loaded = false
 
+    fun ensureLoaded(modulePath: String) {
+        if (!loaded) {
+            System.load("$modulePath!/lib/${Build.SUPPORTED_ABIS[0]}/libdexkit.so")
+            loaded = true
+        }
+    }
+
     /** [find] returns exactly [count] methods (in a fixed order), or any non-empty list when [count] is [ANY]; null if the fingerprints don't match. */
     fun resolve(
         lp: XC_LoadPackage.LoadPackageParam,
@@ -40,10 +47,7 @@ object Resolver {
             XposedBridge.log("$TAG: cache unusable: $t")
         }
 
-        if (!loaded) {
-            System.load("$modulePath!/lib/${Build.SUPPORTED_ABIS[0]}/libdexkit.so")
-            loaded = true
-        }
+        ensureLoaded(modulePath)
         DexKitBridge.create(apk.absolutePath).use { bridge ->
             val found = find(bridge) ?: return null
             if (found.isEmpty() || (count != ANY && found.size != count)) return null

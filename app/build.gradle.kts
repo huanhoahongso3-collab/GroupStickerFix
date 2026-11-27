@@ -10,8 +10,8 @@ android {
         applicationId = "dhp.tpl.groupstickerfix"
         minSdk = 28
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.6.2"
+        versionCode = 10
+        versionName = "1.6.3"
     }
     signingConfigs {
         create("release") {
