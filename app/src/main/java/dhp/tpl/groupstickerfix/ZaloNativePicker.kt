@@ -19,6 +19,7 @@ import java.io.File
 import android.view.ContentInfo
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.MimeTypeMap
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -105,7 +106,6 @@ object ZaloNativePicker {
     @TargetApi(33)
     private fun launch(activity: Activity) {
         val intent = Intent(MediaStore.ACTION_PICK_IMAGES).apply {
-            type = "image/*"
             putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, MediaStore.getPickImagesMaxLimit())
         }
         activity.startActivityForResult(intent, REQUEST_PICK)
@@ -194,13 +194,15 @@ object ZaloNativePicker {
             ?: views.firstOrNull { it.receiveContentMimeTypes != null && it.isShown }
     }
 
-    private fun extensionFor(type: String) = when {
-        type.endsWith("png") -> "png"
-        type.endsWith("webp") -> "webp"
-        type.endsWith("gif") -> "gif"
-        type.contains("heic") || type.contains("heif") -> "heic"
-        else -> "jpg"
-    }
+    private fun extensionFor(type: String): String =
+        MimeTypeMap.getSingleton().getExtensionFromMimeType(type) ?: when {
+            type.endsWith("png") -> "png"
+            type.endsWith("webp") -> "webp"
+            type.endsWith("gif") -> "gif"
+            type.contains("heic") || type.contains("heif") -> "heic"
+            type.startsWith("video/") -> "mp4"
+            else -> "jpg"
+        }
 
     /** Copy a picked content Uri into the app's cache and wrap it as a Zalo MediaItem (built from a local path). */
     private fun toMediaItem(activity: Activity, uri: Uri, index: Int, itemCls: Class<*>): Any {
@@ -246,7 +248,8 @@ object ZaloNativePicker {
         val receiver = findReceiver(activity.window.decorView) ?: error("chat input not found")
         for (uri in uris) {
             val type = activity.contentResolver.getType(uri) ?: "image/*"
-            val clip = ClipData(ClipDescription("image", arrayOf(type)), ClipData.Item(uri))
+            val label = if (type.startsWith("video/")) "video" else "image"
+            val clip = ClipData(ClipDescription(label, arrayOf(type)), ClipData.Item(uri))
             val rest = receiver.performReceiveContent(ContentInfo.Builder(clip, ContentInfo.SOURCE_DRAG_AND_DROP).build())
             XposedBridge.log("$TAG: [zalo] drop type=$type uri=$uri -> remaining=${rest?.clip?.itemCount}")
         }

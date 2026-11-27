@@ -171,14 +171,15 @@ object MessengerMedia {
                     XposedBridge.log("$TAG: [messenger] picker returned ${uris.size} item(s) via ${self.javaClass.name} (native=$native)")
 
                     val method = param.method as Method
-                    val type = intent.type ?: AndroidAppHelper.currentApplication()?.contentResolver?.getType(uris[0])
+                    val cr = AndroidAppHelper.currentApplication()?.contentResolver
                     val resources = ArrayList<Any>()
                     var last: Any? = null
                     captured.set(resources)
                     try {
                         for (uri in uris) {
                             try {
-                                val one = Intent(intent).apply { clipData = null; setDataAndType(uri, type) }
+                                val itemType = cr?.getType(uri) ?: intent.type
+                                val one = Intent(intent).apply { clipData = null; setDataAndType(uri, itemType) }
                                 last = XposedBridge.invokeOriginalMethod(method, cloneWith(self, intentFields, one), param.args)
                             } catch (t: Throwable) {
                                 XposedBridge.log("$TAG: [messenger] google photos item failed: ${t.cause ?: t}")
@@ -378,7 +379,15 @@ object MessengerMedia {
         val path = uri.path
         val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         if (path != null) android.graphics.BitmapFactory.decodeFile(path, opts)
-        val mime = opts.outMimeType ?: "image/jpeg"
+        val mime = opts.outMimeType
+            ?: instanceFields(mr.javaClass).firstNotNullOfOrNull { f ->
+                (f.get(mr) as? String)?.takeIf { it.startsWith("image/") || it.startsWith("video/") }
+            }
+            ?: path?.let {
+                val ext = android.webkit.MimeTypeMap.getFileExtensionFromUrl(it)
+                if (!ext.isNullOrEmpty()) android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase()) else null
+            }
+            ?: "image/jpeg"
         // older builds set these through builder methods; newer ones expose public fields
         val uriSetter = builderCls.declaredMethods.firstOrNull { it.parameterTypes.contentEquals(arrayOf(Uri::class.java)) }
         val mimeSetter = builderCls.declaredMethods.firstOrNull { it.parameterTypes.contentEquals(arrayOf(String::class.java)) }

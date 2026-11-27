@@ -61,7 +61,6 @@ object MessengerNativePicker {
                     if (!HookPrefs.enabled(Prefs.MESSENGER_NATIVE_PICKER)) return
                     val fragment = currentThread() ?: return
                     val intent = Intent(MediaStore.ACTION_PICK_IMAGES).apply {
-                        type = "image/*"
                         putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, MediaStore.getPickImagesMaxLimit())
                     }
                     param.result = null
